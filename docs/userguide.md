@@ -289,8 +289,12 @@ ClosedownAt=Friday 22:00
 don't interfere. Giving them different times (eg `11:45 PM` and `11:50 PM`) keeps their logs
 easier to read.
 
-**If TWS stops for another reason** (a crash, File > Exit, a power cut), auto-restart doesn't
+**If TWS stops for another reason** (File > Exit, a power cut), auto-restart doesn't
 happen. A scheduled task that runs every few minutes can start it again (see *Scheduled tasks*).
+
+If the Java VM itself crashes (it leaves an `hs_err_pid*.log` in the settings folder), `ibc.ps1`
+restarts IBC after 10 seconds. There is no `autorestart` file then, so you have to log in again.
+It gives up after more than 3 crashes in 30 minutes.
 
 ## 9. Second factor authentication
 
@@ -394,7 +398,7 @@ When you create the task:
 
 With auto-restart set, the task keeps running all week, because `ibc.ps1` stays running through
 the daily restarts. It ends when TWS is shut down without a restart: at the Sunday cold restart
-it continues, but File > Exit, a STOP command, `ClosedownAt`, or a crash end it.
+it continues, but File > Exit, a STOP command, or `ClosedownAt` end it.
 
 The sample task `Start TWS (autorestart).xml` in the IBC folder shows a useful pattern. Import it
 into Task Scheduler, then enable it and set the user account it runs under (and add an account

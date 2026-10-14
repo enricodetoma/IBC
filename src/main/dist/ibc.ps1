@@ -661,10 +661,14 @@ try {
     # prevent other Java tools interfering with IBC
     $env:JAVA_TOOL_OPTIONS = $null
 
+    # times of recent JVM crashes, to stop a crash loop
+    $crashTimes = [System.Collections.Generic.List[datetime]]::new()
+
     Push-Location -LiteralPath $twsSettingsPath
     try {
         while ($true) {
             $phase = 'Running IBC'
+            $startedAt = Get-Date
 
             # stop TWS/Gateway being restarted without IBC. A single overwriting move,
             # rather than delete-then-rename, so that another IBC instance starting at
@@ -726,8 +730,31 @@ try {
                 continue
             }
 
+            # A JVM crash (eg an access violation in awt.dll when the display configuration
+            # changes) exits with code 1, the same as a killed process, but leaves an
+            # hs_err_pid*.log in the working folder. Restart rather than leave TWS gone.
+            $crashLog = Get-ChildItem -LiteralPath $twsSettingsPath -Filter 'hs_err_pid*.log' -File -ErrorAction SilentlyContinue |
+                Where-Object { $_.LastWriteTime -ge $startedAt } |
+                Select-Object -First 1
+            $crashed = $exitCode -ne 0 -and $null -ne $crashLog
+            if ($crashed) {
+                Write-Log "The Java VM crashed (see $($crashLog.FullName))"
+                $now = Get-Date
+                $crashTimes.RemoveAll({ param($t) ($now - $t).TotalMinutes -gt 30 }) | Out-Null
+                $crashTimes.Add($now)
+            }
+
             $restart = Get-AutoRestartOption
             $autoRestartOption = $restart.Option
+            if ($crashed -and -not $restart.RestartNeeded) {
+                if ($crashTimes.Count -gt 3) {
+                    Write-Log 'The Java VM has crashed more than 3 times in 30 minutes, so IBC will not be restarted'
+                    break
+                }
+                Write-Log 'IBC will restart shortly after the crash (full authentication will be required)'
+                Start-Sleep -Seconds 10
+                continue
+            }
             if ($restart.RestartNeeded) {
                 $pauseFile = Join-Path $twsSettingsPath "PAUSE$sessionId"
                 if (Test-Path -LiteralPath $pauseFile) {

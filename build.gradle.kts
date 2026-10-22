@@ -14,8 +14,22 @@ val ibcBin: String? = providers.gradleProperty("ibcBin")
     .orElse(providers.environmentVariable("IBC_BIN"))
     .orNull
 
+// The self-updating TWS keeps the classes of TWS and Gateway in jts4launch-<version>-windows-x64_<timestamp>.dat
+// in its jars folder. They are ordinary jar files, but javac only reads archives named .jar or .zip, so the
+// newest one is copied under a .jar name.
+val stagedTwsJars = layout.buildDirectory.dir("tws-jars")
+val stageTwsJars = tasks.register<Copy>("stageTwsJars") {
+    val datFile = ibcBin?.let { dir ->
+        File(dir).listFiles { f -> f.name.matches(Regex("jts4launch-.*_\\d+\\.dat")) }?.maxByOrNull { it.name }
+    }
+    if (datFile != null) from(datFile)
+    rename { it.replace(Regex("_\\d+\\.dat$"), ".jar") }
+    into(stagedTwsJars)
+}
+
 dependencies {
     if (ibcBin != null) compileOnly(fileTree(ibcBin) { include("**/*.jar") })
+    compileOnly(fileTree(stagedTwsJars) { include("*.jar"); builtBy(stageTwsJars) })
 }
 
 // The version is the build date, yy.M.d (eg 26.10.1), unless -PibcVersion=<version> is

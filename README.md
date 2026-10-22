@@ -18,7 +18,10 @@ It does not keep backward compatibility with existing IBC installations: config 
 formats may change. The upstream README is kept in
 [docs/upstream-README.md](docs/upstream-README.md).
 
-IBC only works with the **offline** (standalone) TWS installer, not the self-updating TWS.
+IBC works with the **offline** (standalone) TWS installer, and (experimental, this fork) with the self-updating TWS: if
+no offline version is installed in `C:\Jts`, or `TwsMajorVersion=latest` is set, IBC runs the self-updating TWS from the
+class path recorded in `C:\Jts\.install4j\i4jparams.conf`. IBC never updates it: it runs the version that is installed.
+The build also accepts the self-updating `jars` folder as `IBC_BIN` (e.g. `C:\Jts\jars`).
 
 ## Repository layout
 

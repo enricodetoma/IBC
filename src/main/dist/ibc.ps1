@@ -48,8 +48,9 @@ Examples:
 How start is configured: besides IBC's own settings, the configuration file
 can hold these launcher settings, which IBC itself ignores. Each is optional:
 
-  TwsMajorVersion   eg 1051. Default: the newest offline TWS/Gateway
-                    installed in TwsPath
+  TwsMajorVersion   eg 1051, or 'latest' for the self-updating TWS/Gateway.
+                    Default: the newest offline TWS/Gateway installed in
+                    TwsPath, else the self-updating one
   TwsPath           where TWS/Gateway is installed. Default: C:\Jts
   TwsSettingsPath   where TWS keeps its settings. Default: the folder that
                     already holds them (jts.ini), eg C:\Jts\1051. Instances
@@ -348,6 +349,32 @@ function Find-NewestVersion([string[]]$Folders) {
         Select-Object -First 1 -ExpandProperty Name
 }
 
+# The self-updating TWS (Gateway: <TwsPath>\ibgateway) installs into the folder itself, with no version folder:
+# the program jars are in jars, the libraries it downloads are in the same folder as <name>_<timestamp>.dat
+# (plain jar files under another name), and .install4j\i4jparams.conf lists its exact class path.
+function Test-SelfUpdatingInstall([string]$Folder) {
+    (Test-Path -LiteralPath (Join-Path $Folder 'jars') -PathType Container) -and
+        (Test-Path -LiteralPath (Join-Path $Folder '.install4j' 'i4jparams.conf'))
+}
+
+# The jar files of the self-updating TWS class path, in its order. A downloaded jar is stored as
+# <name>_<timestamp>.dat; if there are several, the newest wins.
+function Get-SelfUpdatingClassPath([string]$JarsPath, [string]$I4jParams) {
+    $content = Get-Content -LiteralPath $I4jParams -Raw
+    $names = foreach ($variable in 'launcherClassPath', 'launcherInternalJars', 'launcherThirdPartyJars') {
+        if ($content -match "<variable name=`"$variable`" value=`"([^`"]*)`"") {
+            $Matches[1] -split ':' | Where-Object { $_ }
+        }
+    }
+    foreach ($name in $names | Select-Object -Unique) {
+        $jar = Join-Path $JarsPath $name
+        if (Test-Path -LiteralPath $jar) { $jar; continue }
+        $dat = Get-ChildItem -LiteralPath $JarsPath -Filter ([IO.Path]::GetFileNameWithoutExtension($name) + '_*.dat') |
+            Where-Object { $_.Name -match '_\d+\.dat$' } | Sort-Object Name -Descending | Select-Object -First 1
+        if ($dat) { $dat.FullName } else { Write-Log "Warning: $name is in the TWS class path but is not in $JarsPath" }
+    }
+}
+
 if ($InWindow) {
     $Host.UI.RawUI.BackgroundColor = 'Black'
     $Host.UI.RawUI.ForegroundColor = 'Green'
@@ -372,12 +399,18 @@ try {
     if (-not $twsMajorVersion) {
         $preferred = $Gateway ? @((Join-Path $twsPath 'ibgateway'), $twsPath) : @($twsPath, (Join-Path $twsPath 'ibgateway'))
         $twsMajorVersion = (Find-NewestVersion $preferred[0]) ?? (Find-NewestVersion $preferred[1])
+        # no offline install: use the self-updating one
+        if (-not $twsMajorVersion -and
+            ((Test-SelfUpdatingInstall $twsPath) -or (Test-SelfUpdatingInstall (Join-Path $twsPath 'ibgateway')))) {
+            $twsMajorVersion = 'latest'
+        }
         if (-not $twsMajorVersion) {
-            Fail $E_NO_TWS_VERSION "No offline TWS/Gateway installation found in $twsPath" @(
-                'Install the offline TWS/Gateway, or set TwsPath or TwsMajorVersion in the configuration file'
-                'IBC does not work with the auto-updating TWS/Gateway')
+            Fail $E_NO_TWS_VERSION "No TWS/Gateway installation found in $twsPath" @(
+                'Install TWS/Gateway, or set TwsPath or TwsMajorVersion in the configuration file')
         }
     }
+    # TwsMajorVersion=latest selects the self-updating TWS/Gateway even when an offline one is installed
+    $selfUpdating = $twsMajorVersion -eq 'latest'
     $on2FATimeout = $settings['On2FATimeout'] ? $settings['On2FATimeout'].ToLowerInvariant() : 'exit'
     if ($on2FATimeout -notin 'restart', 'exit') {
         Fail $E_INVALID_ARG "On2FATimeout is '$on2FATimeout' in $Config but must be either 'restart' or 'exit'"
@@ -459,8 +492,8 @@ try {
 
     $entryPoint = $Gateway ? 'ibcalpha.ibc.IbcGateway' : 'ibcalpha.ibc.IbcTws'
 
-    $twsProgramPath = Join-Path $twsPath $twsMajorVersion
-    $gatewayProgramPath = Join-Path $twsPath 'ibgateway' $twsMajorVersion
+    $twsProgramPath = $selfUpdating ? $twsPath : (Join-Path $twsPath $twsMajorVersion)
+    $gatewayProgramPath = $selfUpdating ? (Join-Path $twsPath 'ibgateway') : (Join-Path $twsPath 'ibgateway' $twsMajorVersion)
     if ($Gateway) {
         $programPath = $gatewayProgramPath
         $vmOptionsFile = Join-Path $programPath 'ibgateway.vmoptions'
@@ -481,9 +514,12 @@ try {
     $install4jPath = Join-Path $programPath '.install4j'
 
     if (-not (Test-Path -LiteralPath $jarsPath)) {
-        Fail $E_TWS_VERSION_NOT_INSTALLED "Offline TWS/Gateway version $twsMajorVersion is not installed: can't find jars folder" @(
-            'Make sure you install the offline version of TWS/Gateway'
-            'IBC does not work with the auto-updating TWS/Gateway')
+        Fail $E_TWS_VERSION_NOT_INSTALLED "TWS/Gateway version $twsMajorVersion is not installed: can't find jars folder" @(
+            'Check TwsPath and TwsMajorVersion in the configuration file')
+    }
+    if ($selfUpdating -and -not (Test-Path -LiteralPath (Join-Path $install4jPath 'i4jparams.conf'))) {
+        Fail $E_TWS_VERSION_NOT_INSTALLED "$install4jPath\i4jparams.conf not found: $programPath is not a self-updating TWS/Gateway installation" @(
+            'Check TwsPath in the configuration file')
     }
 
     # TWS settings: by default the folder that already holds them. Recent offline
@@ -540,8 +576,13 @@ try {
 
     $phase = 'Generating the classpath'
 
+    # The self-updating TWS keeps several versions of its jars side by side in jars (and the libraries it
+    # downloads as .dat files), so the class path is the one its installer recorded, not every file.
+    $programJars = $selfUpdating ?
+        @(Get-SelfUpdatingClassPath $jarsPath (Join-Path $install4jPath 'i4jparams.conf')) :
+        @((Get-ChildItem -LiteralPath $jarsPath -Filter *.jar | Sort-Object Name).FullName)
     $classpath = @(
-        (Get-ChildItem -LiteralPath $jarsPath -Filter *.jar | Sort-Object Name).FullName
+        $programJars
         Join-Path $install4jPath 'i4jruntime.jar'
         Join-Path $ibcPath 'IBC.jar'
     ) -join ';'
